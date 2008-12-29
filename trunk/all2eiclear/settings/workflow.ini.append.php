@@ -3,5 +3,6 @@
 [EventSettings]
 ExtensionDirectories[]=all2eiclear
 AvailableEventTypes[]=event_all2eiclear
+AvailableEventTypes[]=event_all2eselectpayment
 
 */ ?>

@@ -1,12 +1,5 @@
 <?php
 
-//include_once("extension/all2eiclear/classes/iclear/nusoap.php");
-//include_once("extension/all2eiclear/classes/iclear/iclear_config.php");
-//include_once("extension/all2eiclear/classes/iclear/iclear_error.php");
-//include_once("extension/all2eiclear/classes/iclear/iclear_wsdl.php");
-//include_once("extension/all2eiclear/classes/iclear/iclear_catalog.php");
-
-
 class all2eiClearClass
 {
     var $shopID = '';
@@ -17,65 +10,74 @@ class all2eiClearClass
     var $currency = '';
     var $basketItems = '';
     var $orderID = '';
+    var $shopURL = '';
+    var $AquiseID = '';
     
     
-	static function initialize()
+    function initialize()
     {
-        
+        $this->sessionID = session_id();
+        $this->getShopURL();
+        $this->getShopAccount();
     }
 
     function getShopAccount()
     {
-		$all2eiclearINI = eZINI::instance( 'all2eiclear.ini' );
-    	$this->shopID = $all2eiclearINI->variable( 'iclearSettings','ShopID' );
+    	  $all2eiclearINI = eZINI::instance( 'all2eiclear.ini' );
+      	$this->shopID = $all2eiclearINI->variable( 'iclearSettings','ShopID' );
+    }
+    
+    function getShopURL()
+    {
+        $all2eiclearINI = eZINI::instance( 'all2eiclear.ini' );
+      	$this->shopURL = $all2eiclearINI->variable( 'iclearSettings','shopURL' );
     }
 
-	function login( $iclearAccount, $iclearAccountPW )
+    function login( $iclearAccount, $iclearAccountPW )
     {
         eZDebug::writeNotice( 'Processing iclear login' );
-    	$client = new SoapClient('http://www.iclear.de/ICUserServices.wsdl');
-    	$login_result = $client->login($iclearAccount, $iclearAccountPW, session_id()); 
+        $client = new SoapClient('http://www.iclear.de/ICUserServices.wsdl');
+        $login_result = $client->login($iclearAccount, $iclearAccountPW, session_id()); 
     	    	
         if( $login_result["status"] == 0 )
         {
-			$this->sessionID = $login_result["sessionID"];
-			$this->requestID = $login_result["requestID"];
-			eZDebug::writeNotice( 'Sucessfully loged in' );
-			return true;
+        		$this->sessionID = $login_result["sessionID"];
+        		$this->requestID = $login_result["requestID"];
+        		eZDebug::writeNotice( 'Sucessfully loged in' );
+        		return true;
         }
         
         eZDebug::writeError( 'Unable to Login' );
         return false;
-        
     }
 
-	function getCustomerAddress()
+    function getCustomerAddress()
     {
-		eZDebug::writeNotice( 'Processing customers iclear address data' );
-    	$client = new SoapClient('http://www.iclear.de/ICUserServices.wsdl');
+		    eZDebug::writeNotice( 'Processing customers iclear address data' );
+        $client = new SoapClient('http://www.iclear.de/ICUserServices.wsdl');
 		
-		$adressList = $client->getAddressList( $this->requestID, $this->sessionID );
+		    $adressList = $client->getAddressList( $this->requestID, $this->sessionID );
             
-		$addrID = $adressList["resultElements"][0]->addrID;
+		    $addrID = $adressList["resultElements"][0]->addrID;
             
-		$this->addrID = $addrID;   
+		    $this->addrID = $addrID;   
     }
     
         
-	function processBasket()
+    function processBasket( $order_id )
     {
-		eZDebug::writeNotice( 'Processing Basket items' );
-		
-		$basket = eZBasket::currentBasket();
-		$basketItemCollection = $basket->productCollection();
-		$basketItems = $basketItemCollection->itemList();
-
-		foreach ($basketItems as $index => $basketItem)
-		{
-			// get the object to fetch the currency
-			// what happens here if we have different currencies ?
-			
-			$productContentObject = $basketItem->attribute( 'contentobject' );
+        eZDebug::writeNotice( 'Processing Basket items' );
+        
+        $order = eZOrder::fetch($order_id);
+        $orderitems = $order->attribute("product_items");
+        
+        foreach ($orderitems as $index => $item)
+        {
+        	// get the object to fetch the currency
+        	// what happens here if we have different currencies ?
+        	   
+            $productContentObject = $item["item_object"]->attribute( 'contentobject' );
+            $productItem = $item["item_object"];
             $priceObj = null;
             $price = 0.0;
             $attributes = $productContentObject->contentObjectAttributes();
@@ -89,83 +91,137 @@ class all2eiClearClass
                 }
             }			
             $currency = $priceObj->attribute( 'currency' );
-			
+
+            $items[$index] = new stdClass();
+            $items[$index]->itemNr = $productContentObject->ID;
+            $items[$index]->title = $item["object_name"];
+            $items[$index]->numOfArtikel = $item["item_count"];
             
+            $price = round($productItem->Price * ( (100 - $item["discount_percent"] ) / 100 ),2);
             
-			
-			$items[$index] = new stdClass();
-	        $items[$index]->itemNr = $basketItem->ContentObjectID;
-	        $items[$index]->title = $basketItem->Name;
-	        $items[$index]->numOfArtikel = $basketItem->ItemCount;
-	        
-	        if ($basketItem->IsVATIncluded == '0')
-	        {
-	        	$priceExVAT = $basketItem->Price;
-	        	$priceInVAT = $basketItem->Price * ( (100 + $basketItem->VATValue) / 100);
-	        }	
-	        else
-	        {
-	        	$priceInVAT = $basketItem->Price;
-	        	$priceExVAT = $basketItem->Price / ( (100 + $basketItem->VATValue) / 100);
-	        	$priceExVAT = round( $priceExVAT, 2); // rounded to cents value
-	        }
-	        
-	        $items[$index]->priceN = $priceExVAT * 100; // Price converted to cents
-	        $items[$index]->priceB = $priceInVAT * 100; // Price converted to cents
-	        
-	        $items[$index]->ustSatz = $basketItem->VATValue;		
-		}
-		
-		$this->basketItems = $items;
-		$this->orderID = $basket->OrderID;
-		$this->currency = $currency;
-            		
+            if ($productItem->IsVATIncluded == '0')
+            {
+              	$priceExVAT = $price;
+              	$priceInVAT = $price * ( (100 + $productItem->VATValue) / 100);
+            }	
+            else
+            {
+              	$priceInVAT = $price;
+              	$priceExVAT = $price / ( (100 + $productItem->VATValue) / 100);
+              	$priceExVAT = round( $priceExVAT, 2); // rounded to cents value
+            }
+            
+            $items[$index]->priceN = $priceExVAT * 100; // Price converted to cents
+            $items[$index]->priceB = $priceInVAT * 100; // Price converted to cents
+            
+            $items[$index]->ustSatz = $productItem->VATValue;
+        }
+        
+        $this->basketItems = $items;
+        $this->orderID = $order_id;
+        $this->currency = $currency;
     }
 
-   function sendOrder()
+    function sendOrder()
     {
-
-		$client = new SoapClient('http://www.iclear.de/ICOrderServices.wsdl', array('trace' => 1));
+		    $client = new SoapClient('http://www.iclear.de/ICOrderServices.wsdl', array('trace' => 1));
+		    //$client = new SoapClient('http://api.iclear.de/EndpointDebugger/ICOrderServices.wsdl', array('trace' => 1));
         eZDebug::writeNotice( 'Sending Basket items' );
         
-        $orderResponse = $client->sendOrderS2S( $this->requestID,
-                                                 $this->addrID,
-                                                 $this->shopID,
-                                                 $this->orderID,
-                                                 $this->currency,
-                                                 $this->basketItems,
-                                                 $this->sessionID);
-        return $orderResponse;    
-    }    
-
+        $orderResponse = $client->sendOrder( $this->shopID,
+                                             $this->orderID,
+                                             $this->currency,
+                                             $this->basketItems,
+                                             $this->sessionID,
+                                             $this->language);
+        $result = $client->__getLastResponse();
     
-	function processOrder()
+        return $orderResponse;    
+    }
+    
+    function shopBetreiberImplement($params)
     {
-		
-    	// Login
-    	if ($this->sessionID == '')
-		{
-			$result = $this->login();			
-		}	
-		
-		// Get customers address 
-    	if ($this->addrID == '')
-		{
-			$result = $this->getCustomerAddress();			
-		}			
-
-		// Get the shop account information
-		$this->getShopAccount();
-		
-		// Set customers delivery address 
-    	
-    	// Proess the basket items
-    	$this->processBasket();	
-
-    	// Send the basket to iclear
-    	$this->sendOrder();	
-    	
+        $all2eiclearINI = eZINI::instance( 'all2eiclear.ini' );
+        $aquise = $all2eiclearINI->variable( 'iclearSettings','AquiseID' );
+        $user = eZUser::currentUser();
+        
+        $client = new SoapClient('http://www.iclear.de/ICShopServices.wsdl', array('trace'=>1, 'encoding '=>'UTF-8' ) );
+        
+        $res = $client->ShopBetreiberImp( $params["FirmaName"],         
+                                          $params["BetreiberVorname"],  
+                                          $params["BetreiberNachname"], 
+                                          $params["FirmaStrasse"],      
+                                          $params["FirmaHausNr"],       
+                                          $params["FirmaPLZ"],          
+                                          $params["FirmaOrt"],          
+                                          $params["FirmaLand"],         
+                                          $params["FirmaEmail"],        
+                                          $params["FirmaFon"],          
+                                          $params["FirmaFax"],          
+                                          $params["FirmaBankName"],     
+                                          $params["FirmaBLZ"],          
+                                          $params["FirmaKto"],          
+                                          $params["FirmaKtoInhaber"],   
+                                          $params["FirmaUSTID"],        
+                                          $params["FirmaStNr"],         
+                                          $params["FirmaFA"],           
+                                          $params["FirmaFALand"],       
+                                          $params["FirmaHRBNr"],        
+                                          $aquise,                             
+                                          $user->attribute("contentobject_id"),
+                                          $this->sessionID                      
+        );
+        $result = $client->__getLastResponse();
+        
+        return array( "response"=>$res, "xml_trace"=>$result );
+    }
+    
+    
+    
+    function processOrder( $orderID )
+    {
+        $req = $this->checkPaymentRequirement($orderID);
+        if( $req === true )
+        {
+            $this->initialize();
+    				// Proess the basket items
+    				$this->processBasket($orderID);
+    				
+    				// Send the basket to iclear
+    				$result = $this->sendOrder();
+    				
+    				if( $result["status"] == 0 )
+    				{
+                header("Location: ".$result["iclearURL"]);
+                exit;
+            }
+        }
+        return true;
     }    
+    
+    function checkPaymentRequirement($orderID, $description="iclear")
+    {
+        $order = eZOrder::fetch( $orderID );
+        $orderItems = $order->attribute( 'order_items' );	
+        $orderStatus = $order->StatusID;
+        
+        $all2eiclearINI = eZINI::instance( 'all2eiclear.ini' );
+        $pendingStatusIDs = $all2eiclearINI->variable( 'acceptOrderSettings','pendingStatusIDs' );
+        
+        $payment = false;
+        
+        foreach ( array_keys( $orderItems ) as $key )
+        {
+            $orderItem =& $orderItems[$key];
+            if( $orderItem->attribute( 'type' ) == "all2eiclearpayment" )
+            {
+                if( $orderItem->attribute( 'description' ) == $description && in_array( $orderStatus, $pendingStatusIDs ) )
+                {
+                    return true;
+                }
+            }
+        }
+    }
     
 	/**
 	*  Print SOAP request and response
@@ -192,246 +248,6 @@ class all2eiClearClass
 	}
     
 }
-
-
-
-
-/*<part name="orderStatus" type="xsd:long"/>
-<part name="orderStatusMessage" type="xsd:string"/>
-<part name="deliveryAddress" type="typens:Addres
-
-  <part name="requestID" type="xsd:string" /> 
-  <part name="deliveryAddrID" type="xsd:long" /> 
-  <part name="shopID" type="xsd:long" /> 
-  <part name="basketID" type="xsd:string" /> 
-  <part name="currency" type="xsd:string" /> 
-  <part name="basketItems" type="typens:BasketItemArray" /> 
-  <part name="sessionID" type="xsd:string" /> 
-  <part name="language" type="xsd:string" /> 
-
-  
-  
-        $server = new soap_server();
-        $server->soap_defencoding = 'UTF-8';
-        $server->configureWSDL('SH_ICUserServices', 'urn:SH_ICUserServices');
-        $server->wsdl->schemaTargetNameSpace = 'urn:SH_ICUserServices';
-        
-        
-        $server->wsdl->addComplexType(
-      																'login',
-      																'complexType',
-      																'array',
-      																'all',
-      																'',
-      																array(
-      																	'userUN'	=> array('name'	=> 'testkundeA', 'type' => 'xsd:string'),
-      																	'userPW'	=> array('name'	=> 'testkundeB', 'type' => 'xsd:string'),
-      																	'sessionID'	=> array('name'	=> session_id(), 'type' => 'xsd:string')
-      																)
-      															);
-        
-        
-        $server->register(
-        									'userLogin',
-        									array(
-        										'userUN' => 'testkundeA',
-        										'userPW' => 'testkundeB',
-        										'sessionID' => session_id()
-        									),
-        									array(
-        										'requestID' => 'xsd:string',
-        										'status' => 'xsd:long',
-        										'statusMessage' => 'xsd:string',
-        										'sessionID' => 'xsd:string'
-        									),
-        									'urn:SH_ICUserServices',
-        									'urn:SH_ICUserServices#login',
-        									'rpc',
-        									'encoded',
-        									'Iclear user login'
-        								);
-        
-        //$HTTP_RAW_POST_DATA = '<soapenv:Envelope> <soapenv:Body> <ns0:login> <userUN soapenv:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xsi:type="xsd:string">testkundeA</userUN> <userPW soapenv:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xsi:type="xsd:string">testkundeB</userPW> <sessionID soapenv:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xsi:type="xsd:string">'.session_id().'</sessionID> </ns0:login> </soapenv:Body> </soapenv:Envelope>';
-        $HTTP_RAW_POST_DATA  = preg_replace('/xmlns=""/', '', $HTTP_RAW_POST_DATA);
-        $res = $server->send($HTTP_RAW_POST_DATA);
-        */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/*
-    // DUMP
-    
-    $server->register(
-        									'userLogin',
-        									array(
-        										'userUN' => 'testkundeA',
-        										'userPW' => 'testkundeB',
-        										'sessionID' => session_id()
-        									),
-        									array(
-        										'requestID' => 'xsd:string',
-        										'status' => 'xsd:long',
-        										'statusMessage' => 'xsd:string',
-        										'sessionID' => 'xsd:string'
-        									),
-        									'urn:SH_ICUserServices',
-        									'urn:SH_ICUserServices#login',
-        									'rpc',
-        									'encoded',
-        									'Iclear user login'
-        								);
-        
-        $HTTP_RAW_POST_DATA = isset($HTTP_RAW_POST_DATA) ? $HTTP_RAW_POST_DATA : '';
-        // removing bogus namespace definitions - nusoap doesn't like it!
-        $HTTP_RAW_POST_DATA  = preg_replace('/xmlns=""/', '', $HTTP_RAW_POST_DATA);
-        $server->service($HTTP_RAW_POST_DATA);
-        
-        
-        
-        
-        
-        
-        
-        
-    
-    $server->configureWSDL('SH_ICOrderServices', 'urn:SH_ICOrderServices');
-        $server->wsdl->schemaTargetNameSpace = 'urn:SH_ICOrderServices';
-        
-        
-        
-        // define incoming address element
-        $server->wsdl->addComplexType(
-        																'Address',
-        																'complexType',
-        																'array',
-        																'all',
-        																'',
-        																array(
-        																	'addrAnrede'	=> array('name'	=> 'addrAnrede', 'type' => 'xsd:string'),
-        																	'addrFirstname'	=> array('name'	=> 'addrFirstname', 'type' => 'xsd:string'),
-        																	'addrLastname'	=> array('name'	=> 'addrLastname', 'type' => 'xsd:string'),
-        																	'addrOrgname'	=> array('name'	=> 'addrOrgname', 'type' => 'xsd:string'),
-        																	'addrStrasse'	=> array('name'	=> 'addrStrasse', 'type' => 'xsd:string'),
-        																	'addrHausNr'	=> array('name'	=> 'addrHausNr', 'type' => 'xsd:string'),
-        																	'addrPLZ'	=> array('name'	=> 'addrPLZ', 'type' => 'xsd:string'),
-        																	'addrOrt'	=> array('name'	=> 'addrOrt', 'type' => 'xsd:string'),
-        																	'addrLand'	=> array('name'	=> 'addrLand', 'type' => 'xsd:string')
-        																)
-        															);
-        
-        // define incoming basketItem element
-        $server->wsdl->addComplexType(
-        																'BasketItem',
-        																'complexType',
-        																'struct',
-        																'all',
-        																'',
-        																array(
-        																	'itemNr'	=> array('name'	=> 'itemNr', 'type' => 'xsd:string'),
-        																	'title'	=> array('name'	=> 'title', 'type' => 'xsd:string'),
-        																	'numOfArtikel'	=> array('name'	=> 'numOfArtikel', 'type' => 'xsd:long'),
-        																	'priceN'	=> array('name'	=> 'priceN', 'type' => 'xsd:string'),
-        																	'priceB'	=> array('name'	=> 'priceB', 'type' => 'xsd:string'),
-        																	'ustSatz'	=> array('name'	=> 'ustSatz', 'type' => 'xsd:string'),
-        																	'Status'	=> array('name'	=> 'Status', 'type' => 'xsd:string')
-        																)
-        															);
-        
-        // define incoming basketItemList element
-        $server->wsdl->addComplexType(
-        																'BasketItemList',
-        																'complexType',
-        																'array',
-        																'',
-        																'SOAP-ENC:Array',
-        																array(),
-        																array(
-        																	array('ref'	=> 'SOAP-ENC:arrayType', 'wsdl:arrayType' => 'tns:BasketItem[]')
-        																),
-        																'tns:BasketItemList'
-        															);
-        
-        // register functions as service
-        $server->register(
-        									'acceptOrder',
-        									array(
-        										'sessionID' => 'xsd:string',
-        										'basketID' => 'xsd:string',
-        										'currency' => 'xsd:string',
-        										'orderStatus' => 'xsd:long',
-        										'orderStatusMessage' => 'xsd:string',
-        										'deliveryAddress' => 'tns:Address',
-        										'requestID' => 'xsd:string',
-        										'BasketItemList' => 'tns:BasketItemList'
-        									),
-        									array(
-        										'requestID' => 'xsd:string',
-        										'status' => 'xsd:long',
-        										'statusMessage' => 'xsd:string',
-        										'shopURL' => 'xsd:string'
-        									),
-        									'urn:SH_ICOrderServices',
-        									'urn:SH_ICOrderServices#acceptOrder',
-        									'rpc',
-        									'encoded',
-        									'Iclear shop side order web service'
-        								);
-        $server->register(
-        									'validateOrder',
-        									array(
-        										'sessionID' => 'xsd:string',
-        										'basketID' => 'xsd:string',
-        										'currency' => 'xsd:string',
-        										'orderStatus' => 'xsd:long',
-        										'orderStatusMessage' => 'xsd:string',
-        										'deliveryAddress' => 'tns:Address',
-        										'requestID' => 'xsd:string',
-        										'BasketItemList' => 'tns:BasketItemList'
-        									),
-        									array(
-        										'requestID' => 'xsd:string',
-        										'status' => 'xsd:long',
-        										'statusMessage' => 'xsd:string'
-        									),
-        									'urn:SH_ICOrderServices',
-        									'urn:SH_ICOrderServices#validateOrder',
-        									'rpc',
-        									'encoded',
-        									'Iclear shop side order validation web service'
-        								);
-    
-
-*/
-
-
 
 ?>
 
